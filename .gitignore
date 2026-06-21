@@ -1,0 +1,8 @@
+# wrangler / miniflare local dev state
+.wrangler/
+
+# deps
+node_modules/
+
+# logs
+*.log
