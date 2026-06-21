@@ -1,0 +1,10 @@
+name = "bandcamp-hls"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+
+# デプロイ:
+#   npm i -g wrangler
+#   wrangler deploy
+# ローカル確認:
+#   wrangler dev
+#   curl "http://localhost:8787/album.m3u8?u=https://<artist>.bandcamp.com/album/<slug>"
