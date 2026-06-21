@@ -32,8 +32,14 @@ export default {
     try {
       if (url.pathname === '/album.m3u8') return await handleAlbum(url);
       if (url.pathname === '/seg') return await handleSegment(url, request);
+      if (url.pathname === '/') {
+        // ブラウザ向けに URL ジェネレータの静的ページを返す
+        return new Response(INDEX_HTML, {
+          headers: cors({ 'Content-Type': 'text/html; charset=utf-8' }),
+        });
+      }
       return new Response(USAGE, {
-        status: url.pathname === '/' ? 200 : 404,
+        status: 404,
         headers: cors({ 'Content-Type': 'text/plain; charset=utf-8' }),
       });
     } catch (e) {
@@ -49,6 +55,134 @@ const USAGE =
   'bandcamp-hls-worker\n\n' +
   'GET /album.m3u8?u=<bandcamp album url>  -> HLS playlist\n' +
   'GET /seg?u=<mp3 url>&ts=<seconds>       -> mp3 segment (+ID3 ts)\n';
+
+// Bandcamp の URL を入れると VRChat に貼る .m3u8 URL を生成する静的ページ。
+// origin はクライアント側で location.origin から取るので、localhost でもデプロイ後でもそのまま動く。
+const INDEX_HTML = `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bandcamp-hls-worker</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #0d1117; color: #e6edf3;
+    font-family: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", "Hiragino Sans", "Noto Sans JP", sans-serif;
+    padding: 24px;
+  }
+  .card {
+    width: 100%; max-width: 640px; background: #161b22; border: 1px solid #30363d;
+    border-radius: 14px; padding: 28px 28px 24px;
+  }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  p.sub { margin: 0 0 20px; color: #8b949e; font-size: 13px; line-height: 1.6; }
+  label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 6px; }
+  input[type=text] {
+    width: 100%; padding: 11px 12px; font-size: 14px; border-radius: 8px;
+    border: 1px solid #30363d; background: #0d1117; color: #e6edf3;
+  }
+  input[type=text]:focus { outline: none; border-color: #2f81f7; }
+  .opts { margin: 12px 0 4px; font-size: 13px; color: #8b949e; display: flex; gap: 16px; flex-wrap: wrap; }
+  .opts label { display: inline-flex; align-items: center; gap: 6px; margin: 0; cursor: pointer; }
+  .out { margin-top: 20px; display: none; }
+  .out.show { display: block; }
+  .row { display: flex; gap: 8px; }
+  .row input { flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  button {
+    padding: 11px 16px; font-size: 14px; font-weight: 600; border: 0; border-radius: 8px;
+    background: #238636; color: #fff; cursor: pointer; white-space: nowrap;
+  }
+  button:hover { background: #2ea043; }
+  button.copy { background: #21262d; border: 1px solid #30363d; color: #e6edf3; }
+  button.copy:hover { background: #30363d; }
+  .err { color: #f85149; font-size: 13px; margin-top: 10px; min-height: 18px; }
+  .actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  a.link { color: #2f81f7; font-size: 13px; text-decoration: none; }
+  a.link:hover { text-decoration: underline; }
+  code { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>bandcamp-hls-worker</h1>
+    <p class="sub">
+      Bandcamp のアルバム URL を入れると、VRChat の AVPro ベースのプレイヤーに貼る
+      HLS(<code>.m3u8</code>)URL を生成します。プレイヤー側で <b>Allow Untrusted URLs</b> を ON に。
+    </p>
+
+    <label for="u">Bandcamp アルバム / トラック URL</label>
+    <input id="u" type="text" placeholder="https://&lt;artist&gt;.bandcamp.com/album/&lt;slug&gt;" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+    <div class="opts">
+      <label><input type="checkbox" id="skipid3"> 先頭 ID3 タグをスキップ(プチノイズ対策)</label>
+    </div>
+
+    <div class="err" id="err"></div>
+
+    <div class="out" id="out">
+      <label>生成された .m3u8 URL</label>
+      <div class="row">
+        <input id="result" type="text" readonly>
+        <button class="copy" id="copy">コピー</button>
+      </div>
+      <div class="actions">
+        <a class="link" id="open" target="_blank" rel="noopener">↗ 開いてプレイリストを確認</a>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  var u = document.getElementById('u');
+  var skip = document.getElementById('skipid3');
+  var err = document.getElementById('err');
+  var out = document.getElementById('out');
+  var result = document.getElementById('result');
+  var copy = document.getElementById('copy');
+  var open = document.getElementById('open');
+
+  function isBandcamp(host) { return /(^|\\.)bandcamp\\.com$/i.test(host); }
+
+  function build() {
+    var raw = u.value.trim();
+    err.textContent = '';
+    if (!raw) { out.className = 'out'; return; }
+    var parsed;
+    try { parsed = new URL(raw); } catch (e) {
+      err.textContent = 'URL の形式が正しくありません。';
+      out.className = 'out'; return;
+    }
+    if (!isBandcamp(parsed.hostname)) {
+      err.textContent = '*.bandcamp.com の URL を入れてください。';
+      out.className = 'out'; return;
+    }
+    var url = location.origin + '/album.m3u8?u=' + encodeURIComponent(parsed.toString());
+    if (skip.checked) url += '&skipid3=1';
+    result.value = url;
+    open.href = url;
+    out.className = 'out show';
+  }
+
+  u.addEventListener('input', build);
+  skip.addEventListener('change', build);
+
+  copy.addEventListener('click', function () {
+    result.select();
+    var done = function () { copy.textContent = 'コピーしました'; setTimeout(function(){ copy.textContent = 'コピー'; }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(result.value).then(done, function(){ try { document.execCommand('copy'); done(); } catch (e) {} });
+    } else {
+      try { document.execCommand('copy'); done(); } catch (e) {}
+    }
+  });
+})();
+</script>
+</body>
+</html>
+`;
 
 /* ---------- /album.m3u8 ---------- */
 
