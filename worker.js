@@ -1,6 +1,6 @@
 /**
- * bandcamp-hls-worker
- * --------------------
+ * bcvrc
+ * -----
  * Bandcamp アルバムURL を HLS(.m3u8)に変換して、VRChat(AVProベースのプレイヤー)で
  * アルバムを通し再生できるようにする Cloudflare Worker.
  *
@@ -52,7 +52,7 @@ export default {
 };
 
 const USAGE =
-  'bandcamp-hls-worker\n\n' +
+  'bcvrc\n\n' +
   'GET /album.m3u8?u=<bandcamp album url>  -> HLS playlist\n' +
   'GET /seg?u=<mp3 url>&ts=<seconds>       -> mp3 segment (+ID3 ts)\n';
 
@@ -63,7 +63,7 @@ const INDEX_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>bandcamp-hls-worker</title>
+<title>bcvrc</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -107,29 +107,20 @@ const INDEX_HTML = `<!doctype html>
 </head>
 <body>
   <div class="card">
-    <h1>bandcamp-hls-worker</h1>
-    <p class="sub">
-      Bandcamp のアルバム URL を入れると、VRChat の AVPro ベースのプレイヤーに貼る
-      HLS(<code>.m3u8</code>)URL を生成します。プレイヤー側で <b>Allow Untrusted URLs</b> を ON に。
-    </p>
+    <h1>Bandcamp → VRChat</h1>
+    <p class="sub">Bandcamp の URL を貼ると、VRChat で使える URL が出てきます。</p>
+    <p class="sub"><a class="link" href="https://github.com/naari3/bcvrc" target="_blank" rel="noopener">GitHub</a></p>
 
-    <label for="u">Bandcamp アルバム / トラック URL</label>
-    <input id="u" type="text" placeholder="https://&lt;artist&gt;.bandcamp.com/album/&lt;slug&gt;" autocomplete="off" autocapitalize="off" spellcheck="false">
-
-    <div class="opts">
-      <label><input type="checkbox" id="skipid3"> 先頭 ID3 タグをスキップ(プチノイズ対策)</label>
-    </div>
+    <label for="u">Bandcamp URL</label>
+    <input id="u" type="text" placeholder="https://artist.bandcamp.com/album/..." autocomplete="off" autocapitalize="off" spellcheck="false">
 
     <div class="err" id="err"></div>
 
     <div class="out" id="out">
-      <label>生成された .m3u8 URL</label>
+      <label>VRChat に貼り付ける URL</label>
       <div class="row">
         <input id="result" type="text" readonly>
         <button class="copy" id="copy">コピー</button>
-      </div>
-      <div class="actions">
-        <a class="link" id="open" target="_blank" rel="noopener">↗ 開いてプレイリストを確認</a>
       </div>
     </div>
   </div>
@@ -137,12 +128,10 @@ const INDEX_HTML = `<!doctype html>
 <script>
 (function () {
   var u = document.getElementById('u');
-  var skip = document.getElementById('skipid3');
   var err = document.getElementById('err');
   var out = document.getElementById('out');
   var result = document.getElementById('result');
   var copy = document.getElementById('copy');
-  var open = document.getElementById('open');
 
   function isBandcamp(host) { return /(^|\\.)bandcamp\\.com$/i.test(host); }
 
@@ -156,18 +145,14 @@ const INDEX_HTML = `<!doctype html>
       out.className = 'out'; return;
     }
     if (!isBandcamp(parsed.hostname)) {
-      err.textContent = '*.bandcamp.com の URL を入れてください。';
+      err.textContent = 'Bandcamp の URL を入れてください。';
       out.className = 'out'; return;
     }
-    var url = location.origin + '/album.m3u8?u=' + encodeURIComponent(parsed.toString());
-    if (skip.checked) url += '&skipid3=1';
-    result.value = url;
-    open.href = url;
+    result.value = location.origin + '/album.m3u8?u=' + encodeURIComponent(parsed.toString());
     out.className = 'out show';
   }
 
   u.addEventListener('input', build);
-  skip.addEventListener('change', build);
 
   copy.addEventListener('click', function () {
     result.select();
@@ -218,7 +203,8 @@ async function handleAlbum(url) {
 
   if (!tracks.length) return notFound('no streamable tracks (preview-only / paid?)');
 
-  const m3u8 = buildM3U8(tracks, url.origin);
+  const skipId3 = url.searchParams.get('skipid3') !== '0';
+  const m3u8 = buildM3U8(tracks, url.origin, skipId3);
   return new Response(m3u8, {
     headers: cors({
       'Content-Type': 'application/vnd.apple.mpegurl',
@@ -228,7 +214,7 @@ async function handleAlbum(url) {
   });
 }
 
-function buildM3U8(tracks, origin) {
+function buildM3U8(tracks, origin, skipId3 = true) {
   let target = 0;
   for (const t of tracks) target = Math.max(target, Math.ceil(t.dur));
 
@@ -236,18 +222,22 @@ function buildM3U8(tracks, origin) {
     '#EXTM3U',
     '#EXT-X-VERSION:3',
     '#EXT-X-PLAYLIST-TYPE:VOD',
+    '#EXT-X-INDEPENDENT-SEGMENTS',
     '#EXT-X-TARGETDURATION:' + target,
   ];
 
   let cum = 0;
   for (const t of tracks) {
+    // 各トラックは独立した MP3 ファイルなので不連続を明示する
+    lines.push('#EXT-X-DISCONTINUITY');
     lines.push('#EXTINF:' + t.dur.toFixed(3) + ',' + t.title);
     lines.push(
       origin +
         '/seg?ts=' +
         cum.toFixed(3) +
         '&u=' +
-        encodeURIComponent(t.mp3),
+        encodeURIComponent(t.mp3) +
+        (skipId3 ? '&skipid3=1' : ''),
     );
     cum += t.dur;
   }
@@ -260,8 +250,8 @@ function buildM3U8(tracks, origin) {
 async function handleSegment(url, request) {
   const mp3 = url.searchParams.get('u');
   const ts = parseFloat(url.searchParams.get('ts') || '0');
-  // skipid3=1 のとき Bandcamp 側が付けている先頭 ID3v2 タグをスキップする(リスク3対策)
-  const skipId3 = url.searchParams.get('skipid3') === '1';
+  // skipid3=0 のときのみスキップしない(デフォルト ON)
+  const skipId3 = url.searchParams.get('skipid3') !== '0';
   if (!mp3) return bad('missing ?u=');
 
   const upstreamRes = await fetch(mp3, {

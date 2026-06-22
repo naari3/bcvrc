@@ -1,6 +1,10 @@
-name = "bandcamp-hls"
+name = "bcvrc"
 main = "worker.js"
 compatibility_date = "2025-06-01"
+
+[[routes]]
+pattern = "bcvrc.naari3.net"
+custom_domain = true
 
 # デプロイ:
 #   npm i -g wrangler
